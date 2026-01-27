@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "美麗華影城訂票助手",
+  "version": "1.0.0",
+  "description": "協助處理美麗華影城的訂票流程",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "美麗華影城訂票"
+  },
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.miramarcinemas.tw/*"
+  ]
+}
