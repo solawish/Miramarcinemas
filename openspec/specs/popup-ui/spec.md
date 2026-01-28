@@ -133,7 +133,9 @@ Extension SHALL 在介面最下方提供一個訂購按鈕，並實作完整的�
   15. 從座位選擇頁面的表單中提取所有 input 欄位（選擇器：`#booking_data > section.page_title > section.bg > div > form`）
   16. 構建 POST body，包含所有表單 input 欄位（id 作為 key，value 作為 value），並將選擇的座位序列化為 JSON 陣列作為 `seat` 欄位的值
   17. POST 請求到 `https://www.miramarcinemas.tw/Booking/SeatPlan`，使用 `application/x-www-form-urlencoded` 格式，帶入所有必要的 cookies 和 body 參數
-  18. 處理 API 回應，在 textarea 中顯示結果或錯誤訊息
+  18. 從座位提交回應的 HTML 中解析確認頁表單，取得 form 內所有 input 作為 body（表單選擇器與座位頁相同或依實際頁面結構，例如：`#booking_data > section.page_title > section.bg > div > form`）
+  19. POST 請求到 `https://www.miramarcinemas.tw/Booking/Confirm`，使用 `application/x-www-form-urlencoded` 格式，帶入 cookies 與上述 form body
+  20. 處理 API 回應，在 textarea 中顯示結果或錯誤訊息
 
 #### Scenario: Cookie 取得
 - **WHEN** Extension 需要取得瀏覽器的 cookies
@@ -322,4 +324,18 @@ Extension SHALL 將選擇的座位提交到 `/Booking/SeatPlan` API 完成訂票
   - `seat`: JSON 序列化的座位陣列
   - 請求 URL: `https://www.miramarcinemas.tw/Booking/SeatPlan`
   - 帶入必要的 cookies（使用 `credentials: 'include'`）
+
+### Requirement: 確認提交功能
+Extension SHALL 在座位選擇提交成功後，從確認頁（POST /Booking/SeatPlan 回應的 HTML）上的 form 取得資料，並對 `https://www.miramarcinemas.tw/Booking/Confirm` 發送 POST（x-www-form-urlencoded），帶入 cookies 與 form body，以完成訂票確認步驟。
+
+#### Scenario: 確認頁表單提取
+- **WHEN** Extension 取得 POST /Booking/SeatPlan 的回應 HTML（確認頁）
+- **THEN** 應從頁面上的 form 取得所有 input 作為 body：以每個 `input` 的 `id` 為 key、`value` 為 value；表單選擇器與座位頁相同（例如：`#booking_data > section.page_title > section.bg > div > form`），或依實際頁面 DOM 調整
+
+#### Scenario: 確認 API 請求格式
+- **WHEN** Extension 準備發送確認請求
+- **THEN** 應使用 POST 方法、Content-Type 為 `application/x-www-form-urlencoded`，並包含：
+  - 請求 URL：`https://www.miramarcinemas.tw/Booking/Confirm`
+  - body：從確認頁 form 提取的所有 input 欄位（id 作為 key，value 作為 value）
+  - 帶入與前述步驟相同之 cookies（例如透過 `credentials: 'include'` 或等同方式）
 

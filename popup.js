@@ -937,19 +937,40 @@ function selectSeats(seats, count) {
 }
 
 /**
- * 從座位選擇頁面 HTML 提取表單資料（#booking_data > section.page_title > section.bg > div > form 內所有 input）
- * @param {string} html - 座位選擇頁面 HTML
+ * 從 HTML 提取表單資料（支援座位頁和確認頁）
+ * @param {string} html - 頁面 HTML
  * @returns {Object} 以 input.id 為 key、input.value 為 value 的物件
  */
 function extractFormData(html) {
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
-    const form = doc.querySelector('#booking_data > section.page_title > section.bg > div > form');
+    
+    // 嘗試多個表單選擇器（座位頁和確認頁）
+    const formSelectors = [
+      '#booking_data > section.page_title > section.bg > div > form', // 座位頁
+      '#booking_data > section:nth-child(4) > div > div.block > form' // 確認頁
+    ];
+    
+    let form = null;
+    let usedSelector = null;
+    
+    for (const selector of formSelectors) {
+      form = doc.querySelector(selector);
+      if (form) {
+        usedSelector = selector;
+        break;
+      }
+    }
+    
     if (!form) {
-      log('找不到座位頁表單 (#booking_data > section.page_title > section.bg > div > form)');
+      log('找不到表單，已嘗試以下選擇器：');
+      formSelectors.forEach(sel => log(`  - ${sel}`));
       return {};
     }
+    
+    log(`找到表單（使用選擇器: ${usedSelector}）`);
+    
     const data = {};
     const inputs = form.querySelectorAll('input');
     for (const input of inputs) {
@@ -1041,6 +1062,48 @@ async function submitSeatSelection(formData, selectedSeats, overrides = {}) {
     return { success: true, response: responseText };
   } catch (error) {
     log(`提交座位選擇失敗: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * 提交確認請求到 /Booking/Confirm
+ * @param {Object} formData - extractFormData 回傳的欄位（input id 為 key）
+ * @returns {Promise<Object>} { success, response }
+ */
+async function submitConfirm(formData) {
+  try {
+    if (Object.keys(formData).length === 0) {
+      throw new Error('確認頁表單資料為空，無法提交確認請求');
+    }
+
+    const bodyParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(formData)) {
+      bodyParams.append(key, value);
+    }
+
+    log('開始提交確認請求...');
+    log(`POST 請求到: https://www.miramarcinemas.tw/Booking/Confirm`);
+    log(`POST Body (前 500 字元): ${bodyParams.toString().substring(0, 500)}`);
+
+    const response = await fetch('https://www.miramarcinemas.tw/Booking/Confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      credentials: 'include',
+      body: bodyParams.toString()
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`HTTP ${response.status} ${response.statusText}\n${errText.substring(0, 500)}`);
+    }
+
+    const responseText = await response.text();
+    log('確認請求提交成功');
+    log(`回應長度: ${responseText.length} 字元`);
+    return { success: true, response: responseText };
+  } catch (error) {
+    log(`提交確認請求失敗: ${error.message}`);
     throw error;
   }
 }
@@ -1236,11 +1299,35 @@ async function handleOrder() {
     log('步驟 10: 提交座位選擇（MovieId/MovieOpeningDate/Cinema/Session/TicketType/Concession 使用上一步訂票 API 參數）...');
     const seatResult = await submitSeatSelection(formData, selectedSeats, seatOverrides);
 
-    if (seatResult.success) {
-      log('✓✓✓ 訂票含座位選擇完成！✓✓✓');
+    if (!seatResult.success) {
+      throw new Error('座位選擇提交失敗');
+    }
+
+    log('步驟 11: 解析確認頁表單...');
+    const confirmPageHtml = seatResult.response;
+    const confirmFormData = extractFormData(confirmPageHtml);
+    
+    if (Object.keys(confirmFormData).length === 0) {
+      log('警告：無法從確認頁取得表單欄位');
+      log('座位選擇已成功，但無法完成確認步驟');
+      log('請查看上方的處理過程以了解詳細資訊');
+      return;
+    }
+
+    // 如果表單中沒有 __RequestVerificationToken，使用之前取得的 token
+    if (!confirmFormData['__RequestVerificationToken'] && requestVerificationTokenCookie) {
+      log('確認頁表單中沒有 __RequestVerificationToken，使用之前取得的 token');
+      confirmFormData['__RequestVerificationToken'] = requestVerificationTokenCookie;
+    }
+
+    log('步驟 12: 提交確認請求...');
+    const confirmResult = await submitConfirm(confirmFormData);
+
+    if (confirmResult.success) {
+      log('✓✓✓ 訂票含座位選擇及確認完成！✓✓✓');
       log('請查看上方的處理過程以了解詳細資訊');
     } else {
-      throw new Error('座位選擇提交失敗');
+      throw new Error('確認請求提交失敗');
     }
   } catch (error) {
     log(`✗✗✗ 訂票流程錯誤 ✗✗✗`);
