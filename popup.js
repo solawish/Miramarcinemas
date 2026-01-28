@@ -842,6 +842,210 @@ async function submitOrder(orderData) {
 }
 
 /**
+ * 從座位選擇頁面 HTML 解析可選擇的座位
+ * @param {string} html - 座位選擇頁面 HTML（訂票回應的 response）
+ * @returns {Array<Object>} 可選擇的座位陣列，每項含 AreaCategoryCode, AreaNumber, ColumnIndex, RowIndex, PhysicalName, SeatId
+ */
+function parseSeatTable(html) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const seatTable = doc.getElementById('seatTable');
+
+    if (!seatTable) {
+      log('找不到 id=seatTable 的表格元素');
+      return [];
+    }
+
+    const allTds = seatTable.querySelectorAll('td');
+    const seats = [];
+
+    for (const td of allTds) {
+      const style = (td.getAttribute('style') || '').toLowerCase();
+      const bgMatch = style.match(/background-color\s*:\s*([^;]+)/);
+      const bgValue = (bgMatch ? bgMatch[1].trim() : '').toLowerCase();
+      const isWhite = bgValue === 'white' || /rgb\s*\(\s*255\s*,\s*255\s*,\s*255\s*\)/.test(bgValue);
+      if (!isWhite) {
+        continue;
+      }
+
+      const getAttr = (name) => (td.getAttribute(name) || '').trim();
+      const seat = {
+        AreaCategoryCode: getAttr('areacategorycode') || getAttr('AreaCategoryCode'),
+        AreaNumber: getAttr('areanumber') || getAttr('AreaNumber'),
+        ColumnIndex: getAttr('columnindex') || getAttr('ColumnIndex'),
+        RowIndex: getAttr('rowindex') || getAttr('RowIndex'),
+        PhysicalName: getAttr('physicalname') || getAttr('PhysicalName'),
+        SeatId: getAttr('seatid') || getAttr('SeatId')
+      };
+      if (seat.PhysicalName && seat.SeatId) {
+        seats.push(seat);
+      }
+    }
+
+    log(`從座位表解析出 ${seats.length} 個可選擇座位`);
+    return seats;
+  } catch (error) {
+    log(`解析座位表錯誤: ${error.message}`);
+    return [];
+  }
+}
+
+/**
+ * 根據票數與優先順序選擇座位（PhysicalName 越大越好，同區取 SeatId 中間值）
+ * @param {Array<Object>} seats - parseSeatTable 回傳的座位陣列
+ * @param {number} count - 要選擇的座位數
+ * @returns {Array<Object>} 選中的座位陣列
+ */
+function selectSeats(seats, count) {
+  if (!seats || seats.length === 0 || count < 1) {
+    return [];
+  }
+  const n = Math.min(count, seats.length);
+
+  const byPhysical = {};
+  for (const s of seats) {
+    const key = (s.PhysicalName || '').toUpperCase();
+    if (!byPhysical[key]) byPhysical[key] = [];
+    byPhysical[key].push(s);
+  }
+
+  const physicalNames = Object.keys(byPhysical).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  const picked = [];
+
+  for (const p of physicalNames) {
+    const group = byPhysical[p];
+    group.sort((a, b) => parseInt(a.SeatId, 10) - parseInt(b.SeatId, 10));
+    const len = group.length;
+    const mid = Math.floor((len - 1) / 2);
+    const indices = [];
+    const need = Math.min(n - picked.length, len);
+    for (let i = 0; i < need; i++) {
+      const offset = (i % 2 === 0) ? -Math.floor(i / 2) : Math.ceil(i / 2);
+      const idx = mid + offset;
+      if (idx >= 0 && idx < len && !indices.includes(idx)) {
+        indices.push(idx);
+        picked.push(group[idx]);
+      }
+    }
+    if (picked.length >= n) break;
+  }
+
+  const result = picked.slice(0, n);
+  log(`已選擇 ${result.length} 個座位（PhysicalName 優先，同區取中間）`);
+  return result;
+}
+
+/**
+ * 從座位選擇頁面 HTML 提取表單資料（#booking_data > section.page_title > section.bg > div > form 內所有 input）
+ * @param {string} html - 座位選擇頁面 HTML
+ * @returns {Object} 以 input.id 為 key、input.value 為 value 的物件
+ */
+function extractFormData(html) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const form = doc.querySelector('#booking_data > section.page_title > section.bg > div > form');
+    if (!form) {
+      log('找不到座位頁表單 (#booking_data > section.page_title > section.bg > div > form)');
+      return {};
+    }
+    const data = {};
+    const inputs = form.querySelectorAll('input');
+    for (const input of inputs) {
+      const id = input.getAttribute('id');
+      const name = input.getAttribute('name');
+      const value = input.getAttribute('value') || input.value || '';
+      
+      // 優先使用 id，如果沒有 id 則使用 name（例如 __RequestVerificationToken）
+      const key = id || name;
+      if (key) {
+        data[key] = value;
+      }
+    }
+    log(`從表單提取 ${Object.keys(data).length} 個欄位`);
+    if (data['__RequestVerificationToken']) {
+      log('✓ 找到 __RequestVerificationToken');
+    } else {
+      log('警告：表單中沒有找到 __RequestVerificationToken');
+    }
+    return data;
+  } catch (error) {
+    log(`提取表單資料錯誤: ${error.message}`);
+    return {};
+  }
+}
+
+/**
+ * 將選中座位轉成 API 需要的 JSON 陣列格式（與 DOM 屬性對應的 PascalCase 鍵）
+ * @param {Array<Object>} selectedSeats - selectSeats 回傳的座位陣列
+ * @returns {string} JSON 字串
+ */
+function serializeSeatsForApi(selectedSeats) {
+  return JSON.stringify(selectedSeats);
+}
+
+/**
+ * 提交座位選擇到 /Booking/SeatPlan
+ * @param {Object} formData - extractFormData 回傳的欄位（input id 為 key）
+ * @param {Array<Object>} selectedSeats - selectSeats 回傳的座位陣列
+ * @param {Object} [overrides] - 覆寫欄位值，與上一步訂票 API 相同：MovieId, MovieOpeningDate, Cinema, Session, TicketType, Concession
+ * @returns {Promise<Object>} { success, response }
+ */
+async function submitSeatSelection(formData, selectedSeats, overrides = {}) {
+  try {
+    const body = { ...formData };
+    // 移除表單中可能存在的 seat 或 Seat 欄位（如果有的話），我們會用自己選擇的座位
+    delete body.seat;
+    delete body.Seat;
+    
+    const overrideKeys = ['MovieId', 'MovieOpeningDate', 'Cinema', 'Session', 'TicketType', 'Concession'];
+    for (const k of overrideKeys) {
+      if (overrides[k] !== undefined) {
+        body[k] = String(overrides[k]);
+      }
+    }
+    const seatJson = serializeSeatsForApi(selectedSeats);
+    log(`選擇的座位數量: ${selectedSeats.length}`);
+    if (selectedSeats.length > 0) {
+      log(`座位資料範例: ${JSON.stringify(selectedSeats[0])}`);
+    }
+    log(`座位 JSON: ${seatJson}`);
+
+    const bodyParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(body)) {
+      bodyParams.append(key, value);
+    }
+    // 最後加入我們選擇的座位資料
+    bodyParams.append('Seat', seatJson);
+
+    log('開始提交座位選擇...');
+    log(`POST 請求到: https://www.miramarcinemas.tw/Booking/SeatPlan`);
+    log(`POST Body (前 500 字元): ${bodyParams.toString().substring(0, 500)}`);
+
+    const response = await fetch('https://www.miramarcinemas.tw/Booking/SeatPlan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      credentials: 'include',
+      body: bodyParams.toString()
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`HTTP ${response.status} ${response.statusText}\n${errText.substring(0, 500)}`);
+    }
+
+    const responseText = await response.text();
+    log('座位選擇提交成功');
+    log(`回應長度: ${responseText.length} 字元`);
+    return { success: true, response: responseText };
+  } catch (error) {
+    log(`提交座位選擇失敗: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
  * 處理訂購按鈕點擊
  */
 async function handleOrder() {
@@ -962,12 +1166,81 @@ async function handleOrder() {
       ticketType: selectedTicketType,
       ticketCount
     });
-    
-    if (orderResult.success) {
-      log('✓✓✓ 訂票成功！✓✓✓');
+
+    if (!orderResult.success) {
+      throw new Error('訂票失敗');
+    }
+
+    log('步驟 7: 解析座位選擇頁面...');
+    const seatPlanHtml = orderResult.response;
+    const availableSeats = parseSeatTable(seatPlanHtml);
+
+    if (availableSeats.length === 0) {
+      log('訂票請求成功，但無法解析座位表（可能頁面結構不同或無空位）');
+      log('請查看上方的處理過程以了解詳細資訊');
+      return;
+    }
+
+    const ticketCountNum = parseInt(ticketCount, 10);
+    if (ticketCountNum < 1) {
+      log('錯誤：票數無效');
+      return;
+    }
+
+    log('步驟 8: 根據票數與優先順序選擇座位...');
+    const selectedSeats = selectSeats(availableSeats, ticketCountNum);
+
+    if (selectedSeats.length === 0) {
+      log('錯誤：無法選擇任何座位');
+      return;
+    }
+
+    log(`已選擇 ${selectedSeats.length} 個座位`);
+    if (selectedSeats.length > 0) {
+      log(`選中的座位: ${JSON.stringify(selectedSeats)}`);
+    }
+
+    if (selectedSeats.length < ticketCountNum) {
+      log(`警告：僅能選擇 ${selectedSeats.length} 個座位（需要 ${ticketCountNum} 個），將繼續提交`);
+    }
+
+    log('步驟 9: 提取座位頁表單資料...');
+    const formData = extractFormData(seatPlanHtml);
+    if (Object.keys(formData).length === 0) {
+      log('錯誤：無法從座位頁取得表單欄位，無法提交座位選擇');
+      return;
+    }
+
+    // 如果表單中沒有 __RequestVerificationToken，使用上一步取得的 token
+    if (!formData['__RequestVerificationToken'] && requestVerificationTokenCookie) {
+      log('表單中沒有 __RequestVerificationToken，使用上一步取得的 token');
+      formData['__RequestVerificationToken'] = requestVerificationTokenCookie;
+    }
+
+    const ticketTypeArray = [{
+      Qty: parseInt(ticketCount, 10),
+      TicketTypeCode: selectedTicketType.tickettypecode,
+      PriceInCents: selectedTicketType.tickettypeprice,
+      TicketTypeSeats: selectedTicketType.tickettypeseats,
+      OnlyCashPay: selectedTicketType.onlycashpay
+    }];
+    const seatOverrides = {
+      MovieId: movieId,
+      MovieOpeningDate: movieOpeningDate,
+      Cinema: '1001',
+      Session: session,
+      TicketType: JSON.stringify(ticketTypeArray),
+      Concession: '[]'
+    };
+
+    log('步驟 10: 提交座位選擇（MovieId/MovieOpeningDate/Cinema/Session/TicketType/Concession 使用上一步訂票 API 參數）...');
+    const seatResult = await submitSeatSelection(formData, selectedSeats, seatOverrides);
+
+    if (seatResult.success) {
+      log('✓✓✓ 訂票含座位選擇完成！✓✓✓');
       log('請查看上方的處理過程以了解詳細資訊');
     } else {
-      throw new Error('訂票失敗');
+      throw new Error('座位選擇提交失敗');
     }
   } catch (error) {
     log(`✗✗✗ 訂票流程錯誤 ✗✗✗`);
