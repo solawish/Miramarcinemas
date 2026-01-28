@@ -1079,8 +1079,21 @@ async function submitConfirm(formData) {
 
     const bodyParams = new URLSearchParams();
     for (const [key, value] of Object.entries(formData)) {
+      // 排除 AgreeRule 欄位
+      if (key === 'AgreeRule') {
+        log(`排除欄位: ${key}`);
+        continue;
+      }
       bodyParams.append(key, value);
     }
+
+    // 強制將 PayMethod 設為 1（覆蓋表單中的值，如果存在）
+    if (bodyParams.has('PayMethod')) {
+      log('強制將 PayMethod 設為 1（覆蓋表單中的原始值）');
+    } else {
+      log('新增 PayMethod 欄位並設為 1');
+    }
+    bodyParams.set('PayMethod', '1');
 
     log('開始提交確認請求...');
     log(`POST 請求到: https://www.miramarcinemas.tw/Booking/Confirm`);
@@ -1101,6 +1114,25 @@ async function submitConfirm(formData) {
     const responseText = await response.text();
     log('確認請求提交成功');
     log(`回應長度: ${responseText.length} 字元`);
+    
+    // 解析回應中的 window.location URL
+    const urlMatch = responseText.match(/window\.location\s*=\s*['"]([^'"]+)['"]/);
+    if (urlMatch && urlMatch[1]) {
+      const paymentUrl = urlMatch[1];
+      log(`解析到付款 URL: ${paymentUrl}`);
+      
+      // 在新分頁中開啟付款 URL
+      try {
+        await chrome.tabs.create({ url: paymentUrl });
+        log('✓ 已在新分頁開啟付款頁面');
+      } catch (error) {
+        log(`開啟新分頁失敗: ${error.message}`);
+        // 即使開啟失敗，也繼續返回成功（因為確認請求本身已成功）
+      }
+    } else {
+      log('警告：回應中未找到 window.location URL，可能回應格式不同');
+    }
+    
     return { success: true, response: responseText };
   } catch (error) {
     log(`提交確認請求失敗: ${error.message}`);

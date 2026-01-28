@@ -336,6 +336,8 @@ Extension SHALL 在座位選擇提交成功後，從確認頁（POST /Booking/Se
 - **WHEN** Extension 準備發送確認請求
 - **THEN** 應使用 POST 方法、Content-Type 為 `application/x-www-form-urlencoded`，並包含：
   - 請求 URL：`https://www.miramarcinemas.tw/Booking/Confirm`
-  - body：從確認頁 form 提取的所有 input 欄位（id 作為 key，value 作為 value）
+  - body：從確認頁 form 提取的所有 input 欄位（id 作為 key，value 作為 value），但需進行以下處理：
+    - `PayMethod` 欄位必須強制設為 `1`（無論表單中的原始值為何）
+    - `AgreeRule` 欄位必須被排除，不應包含在 POST body 中
   - 帶入與前述步驟相同之 cookies（例如透過 `credentials: 'include'` 或等同方式）
 

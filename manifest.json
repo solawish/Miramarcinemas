@@ -10,7 +10,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "cookies"
+    "cookies",
+    "tabs"
   ],
   "host_permissions": [
     "https://www.miramarcinemas.tw/*"
