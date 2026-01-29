@@ -66,6 +66,25 @@ select:focus {
   box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.2);
 }
 
+#ticket-type-keyword {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 16px;
+  background-color: #fff;
+}
+
+#ticket-type-keyword:hover {
+  border-color: #999;
+}
+
+#ticket-type-keyword:focus {
+  outline: none;
+  border-color: #4a90e2;
+  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.2);
+}
+
 .time-select-wrapper {
   display: flex;
   gap: 10px;

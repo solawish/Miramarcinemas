@@ -12,7 +12,7 @@ Extension SHALL 提供一個 popup.html 檔案作為主要使用者介面，包�
 
 #### Scenario: HTML 結構完整性
 - **WHEN** 檢視 popup.html 的 HTML 結構
-- **THEN** 應包含四個下拉選單、兩個按鈕和一個 textarea 元素
+- **THEN** 應包含三個下拉選單、一個票種關鍵詞輸入框、兩個按鈕和一個 textarea 元素
 
 ### Requirement: 從美麗華影城網站獲取場次資料
 Extension SHALL 從 `https://www.miramarcinemas.tw/api/Booking/GetMovie/` API 獲取電影列表和場次資訊並解析 JSON 回應。
@@ -68,17 +68,6 @@ Extension SHALL 提供一個下拉選單讓使用者選擇場次時間，選項�
   - 每個時間選項的 `text` 應為「{日期} {時間}」格式（例如：「1月30日 19:00」），日期格式應使用 `Month` 和 `Day` 欄位，時間格式應從 `Showtime` 欄位解析（ISO 8601 格式，例如：`2026-01-30T19:00:00`）
   - 每個時間選項的 `value` 應為對應的 `SessionId` 或根據需要構建的訂票連結
 
-### Requirement: 票種下拉選單
-Extension SHALL 提供一個下拉選單讓使用者選擇票種。
-
-#### Scenario: 票種選單顯示
-- **WHEN** popup 載入完成
-- **THEN** 票種下拉選單應顯示，包含可用的票種選項（例如：全票、學生票、優待票）
-
-#### Scenario: 票種選擇
-- **WHEN** 使用者從票種下拉選單中選擇一個票種
-- **THEN** 選擇的值應被記錄，並可用於後續的 API 呼叫
-
 ### Requirement: 票數下拉選單
 Extension SHALL 提供一個下拉選單讓使用者選擇購買票數。
 
@@ -116,10 +105,9 @@ Extension SHALL 在介面最下方提供一個訂購按鈕，並實作完整的�
   3. 使用 GET 請求取得票種選擇頁面，URL 為時間下拉選單的 value，並帶入 `ASP.NET_SessionId` cookie
   4. 解析 HTML 回應，找到 `id=ticketTypeTable` 的表格元素
   5. 從表格的 tbody 中提取每個 `tr.TicketTypeData` 元素的票種資訊（包含 tickettypetitle, tickettypeprice, tickettypecode, tickettypeseats, onlycashpay 等屬性）
-  6. 根據優先順序選擇票種：
-     - 優先選擇名稱（tickettypetitle）含有「單人套票」的票種
-     - 如果沒有，選擇名稱含有「全票」的票種
-     - 如果都沒有，選擇第一個票種
+  6. 根據以下邏輯選擇票種（先排除名稱含有「敬老」或「愛心」的票種後）：
+     - 若票種關鍵詞輸入框有值（trim 後非空），則從剩餘票種中選擇名稱（tickettypetitle 或 tickettypetitlealt）包含該關鍵詞者，取第一個符合
+     - 若欄位無值或無符合者：依序選擇名稱含有「全票」→ 名稱含有「單人套票」→ 剩餘票種中的第一個
   7. 從票種選擇頁面取得 `__RequestVerificationToken`（input name="__RequestVerificationToken" 的值）
   8. 從頁面 DOM 取得 `MovieOpeningDate`（ul.movie_info_item 的值，例如：2026-02-01）
   9. 從時間下拉選單的 value URL 中解析 `Session` 和 `MovieId` 參數
@@ -155,11 +143,11 @@ Extension SHALL 在介面最下方提供一個訂購按鈕，並實作完整的�
   - `ticketpackagedescription`: 套票描述（如果有）
 
 #### Scenario: 票種自動選擇
-- **WHEN** Extension 解析出多個可用票種
-- **THEN** 應根據以下優先順序選擇票種：
-  1. 優先選擇 `tickettypetitle` 或 `tickettypetitlealt` 含有「單人套票」的票種
-  2. 如果沒有，選擇名稱含有「全票」的票種
-  3. 如果都沒有，選擇第一個票種
+- **WHEN** Extension 解析出多個可用票種並要選擇一個票種
+- **THEN** 應依序執行以下邏輯：
+  1. 先從解析出的票種中排除名稱（tickettypetitle 或 tickettypetitlealt）含有「敬老」或「愛心」的票種
+  2. 若票種關鍵詞輸入框有值（trim 後非空），則從剩餘票種中選擇名稱包含該關鍵詞者，取第一個符合
+  3. 若欄位無值或無符合者：依序選擇名稱含有「全票」→ 名稱含有「單人套票」→ 剩餘票種中的第一個
 
 #### Scenario: 訂票 API 請求格式
 - **WHEN** Extension 準備發送訂票請求
@@ -340,4 +328,19 @@ Extension SHALL 在座位選擇提交成功後，從確認頁（POST /Booking/Se
     - `PayMethod` 欄位必須強制設為 `1`（無論表單中的原始值為何）
     - `AgreeRule` 欄位必須被排除，不應包含在 POST body 中
   - 帶入與前述步驟相同之 cookies（例如透過 `credentials: 'include'` 或等同方式）
+
+### Requirement: 票種關鍵詞輸入
+Extension SHALL 提供一個輸入框（label「票種」）讓使用者輸入票種關鍵詞（選填），用於訂票時優先從可用票種中匹配名稱包含該關鍵詞的票種。
+
+#### Scenario: 票種輸入顯示
+- **WHEN** popup 載入完成
+- **THEN** 票種區塊應顯示為一個輸入框（label「票種」），可選填，可提供 placeholder 提示為關鍵詞（例如：「選填，如：全票、學生、套票」）
+
+#### Scenario: 票種關鍵詞參與選票
+- **WHEN** 使用者點擊訂購且票種關鍵詞輸入框有值（trim 後非空）
+- **THEN** 選票邏輯應在排除敬老/愛心後，優先從剩餘票種中選擇名稱（tickettypetitle 或 tickettypetitlealt）包含該關鍵詞者，取第一個符合；若無符合則依預設順序（全票→單人套票→第一個）選擇
+
+#### Scenario: 票種關鍵詞為空時
+- **WHEN** 使用者點擊訂購且票種關鍵詞輸入框為空或僅空白
+- **THEN** 選票邏輯應在排除敬老/愛心後，依預設順序選擇：名稱含有「全票」→ 名稱含有「單人套票」→ 剩餘票種中的第一個
 

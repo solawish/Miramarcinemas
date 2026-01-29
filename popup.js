@@ -1,7 +1,7 @@
 // DOM 元素選取器
 const movieSelect = document.getElementById('movie-select');
 const timeSelect = document.getElementById('time-select');
-const ticketTypeSelect = document.getElementById('ticket-type-select');
+const ticketTypeKeyword = document.getElementById('ticket-type-keyword');
 const ticketCountSelect = document.getElementById('ticket-count-select');
 const refreshBtn = document.getElementById('refresh-btn');
 const orderBtn = document.getElementById('order-btn');
@@ -707,7 +707,7 @@ function parseTicketTypes(html) {
       };
       
       ticketTypes.push(ticketType);
-      log(`解析票種: ${ticketType.tickettypetitle} (代碼: ${ticketType.tickettypecode}, 價格: ${ticketType.tickettypeprice})`);
+      log(`解析票種: ${ticketType.tickettypetitlealt || ticketType.tickettypetitle} (代碼: ${ticketType.tickettypecode}, 價格: ${ticketType.tickettypeprice})`);
     }
     
     return ticketTypes;
@@ -718,37 +718,65 @@ function parseTicketTypes(html) {
 }
 
 /**
- * 根據優先順序選擇票種
+ * 根據優先順序選擇票種：先排除敬老/愛心，若有關鍵詞則依關鍵詞匹配，否則依全票→單人套票→第一個
  * @param {Array<Object>} ticketTypes - 票種陣列
+ * @param {string} keyword - 票種關鍵詞（trim 後，可為空字串）
  * @returns {Object|null} 選定的票種，如果沒有則返回 null
  */
-function selectTicketType(ticketTypes) {
+function selectTicketType(ticketTypes, keyword) {
   if (!ticketTypes || ticketTypes.length === 0) {
     log('沒有可用的票種');
     return null;
   }
-  
-  // 優先選擇名稱含有「單人套票」的票種
-  for (const ticketType of ticketTypes) {
-    const title = ticketType.tickettypetitle || ticketType.tickettypetitlealt || '';
-    if (title.includes('單人套票')) {
-      log(`選擇票種: ${title} (單人套票)`);
-      return ticketType;
+
+  // 先排除名稱含有「敬老」或「愛心」的票種
+  const filtered = ticketTypes.filter((t) => {
+    const title = (t.tickettypetitlealt || t.tickettypetitle || '').trim();
+    if (title.includes('敬老') || title.includes('愛心')) {
+      log(`排除票種: ${title} (敬老/愛心)`);
+      return false;
     }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    log('排除敬老/愛心後無剩餘票種');
+    return null;
   }
-  
-  // 如果沒有，選擇名稱含有「全票」的票種
-  for (const ticketType of ticketTypes) {
-    const title = ticketType.tickettypetitle || ticketType.tickettypetitlealt || '';
+
+  const keywordTrimmed = (keyword || '').trim();
+
+  // 若關鍵詞有值，從剩餘票種中選名稱包含該關鍵詞的第一個
+  if (keywordTrimmed) {
+    for (const ticketType of filtered) {
+      const title = ticketType.tickettypetitlealt || ticketType.tickettypetitle || '';
+      if (title.includes(keywordTrimmed)) {
+        log(`使用關鍵詞「${keywordTrimmed}」選擇票種: ${title}`);
+        return ticketType;
+      }
+    }
+    log(`關鍵詞「${keywordTrimmed}」無符合票種，改依預設順序選擇`);
+  }
+
+  // 依序選擇：全票 → 單人套票 → 第一個
+  for (const ticketType of filtered) {
+    const title = ticketType.tickettypetitlealt || ticketType.tickettypetitle || '';
     if (title.includes('全票')) {
       log(`選擇票種: ${title} (全票)`);
       return ticketType;
     }
   }
-  
-  // 如果都沒有，選擇第一個票種
-  const firstTicket = ticketTypes[0];
-  log(`選擇第一個票種: ${firstTicket.tickettypetitle || firstTicket.tickettypetitlealt || '未知'}`);
+  for (const ticketType of filtered) {
+    const title = ticketType.tickettypetitlealt || ticketType.tickettypetitle || '';
+    if (title.includes('單人套票')) {
+      log(`選擇票種: ${title} (單人套票)`);
+      return ticketType;
+    }
+  }
+
+  const firstTicket = filtered[0];
+  const firstTitle = firstTicket.tickettypetitlealt || firstTicket.tickettypetitle || '未知';
+  log(`選擇第一個票種: ${firstTitle}`);
   return firstTicket;
 }
 
@@ -1222,9 +1250,15 @@ async function handleOrder() {
       throw new Error('找不到可用的票種');
     }
     
-    // 步驟 4: 選擇票種
+    // 步驟 4: 選擇票種（讀取關鍵詞，排除敬老/愛心後依關鍵詞或預設順序選擇）
     log('步驟 4: 選擇票種...');
-    const selectedTicketType = selectTicketType(ticketTypes);
+    const ticketKeyword = (ticketTypeKeyword && ticketTypeKeyword.value) ? ticketTypeKeyword.value.trim() : '';
+    if (ticketKeyword) {
+      log(`票種關鍵詞: 「${ticketKeyword}」`);
+    } else {
+      log('票種關鍵詞: 未填，依預設順序（全票→單人套票→第一個）');
+    }
+    const selectedTicketType = selectTicketType(ticketTypes, ticketKeyword);
     
     if (!selectedTicketType) {
       throw new Error('無法選擇票種');
