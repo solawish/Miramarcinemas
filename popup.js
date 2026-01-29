@@ -15,6 +15,9 @@ let movies = []; // 儲存電影列表（用於下拉選單）
 const CACHE_KEY = 'movies_api_cache';
 const CACHE_EXPIRY = 5 * 60 * 1000; // 5 分鐘（毫秒）
 
+// 表單狀態持久化鍵（關閉重開後還原電影、時間、票數、票種關鍵詞）
+const FORM_STATE_KEY = 'popup_form_state';
+
 // API 端點
 const API_URL = 'https://www.miramarcinemas.tw/api/Booking/GetMovie/';
 
@@ -90,6 +93,70 @@ async function clearCache() {
   } catch (error) {
     log(`清除快取錯誤: ${error.message}`);
   }
+}
+
+/**
+ * 從 chrome.storage.local 讀取表單狀態（電影 GUID、時間 value、票數、票種關鍵詞）
+ * @returns {Promise<{movieGuid: string, timeValue: string, ticketCount: string, ticketTypeKeyword: string}|null>}
+ */
+async function getFormState() {
+  try {
+    const result = await chrome.storage.local.get(FORM_STATE_KEY);
+    const state = result[FORM_STATE_KEY];
+    return state && typeof state === 'object' ? state : null;
+  } catch (error) {
+    log(`讀取表單狀態錯誤: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * 將當前表單狀態寫入 chrome.storage.local
+ */
+async function saveFormStateToStorage() {
+  try {
+    const state = {
+      movieGuid: movieSelect.value || '',
+      timeValue: timeSelect.value || '',
+      ticketCount: ticketCountSelect.value || '',
+      ticketTypeKeyword: (ticketTypeKeyword && ticketTypeKeyword.value) ? ticketTypeKeyword.value.trim() : ''
+    };
+    await chrome.storage.local.set({ [FORM_STATE_KEY]: state });
+  } catch (error) {
+    log(`儲存表單狀態錯誤: ${error.message}`);
+  }
+}
+
+/**
+ * 場次資料載入完成後，從儲存還原電影、時間、票數、票種關鍵詞（僅在選項存在時還原）
+ */
+async function restoreFormState() {
+  const state = await getFormState();
+  if (!state) return;
+
+  const movieGuid = (state.movieGuid && state.movieGuid.trim()) || '';
+  const timeValue = (state.timeValue && state.timeValue.trim()) || '';
+  const ticketCount = (state.ticketCount && state.ticketCount.trim()) || '';
+  const ticketTypeKeywordStr = (state.ticketTypeKeyword && state.ticketTypeKeyword.trim()) || '';
+
+  if (movieGuid) {
+    const movieExists = Array.from(movieSelect.options).some(opt => opt.value === movieGuid);
+    if (movieExists) {
+      movieSelect.value = movieGuid;
+      handleMovieChange();
+      if (timeValue) {
+        const timeExists = Array.from(timeSelect.options).some(opt => opt.value === timeValue);
+        if (timeExists) timeSelect.value = timeValue;
+      }
+    }
+  }
+
+  if (ticketCount) {
+    const countExists = Array.from(ticketCountSelect.options).some(opt => opt.value === ticketCount);
+    if (countExists) ticketCountSelect.value = ticketCount;
+  }
+
+  if (ticketTypeKeyword && ticketTypeKeywordStr !== undefined) ticketTypeKeyword.value = ticketTypeKeywordStr;
 }
 
 /**
@@ -384,6 +451,7 @@ async function loadTimetableData(forceRefresh = false) {
     movieSelect.disabled = false;
     
     log('場次資料載入完成');
+    await restoreFormState();
   } catch (error) {
     log(`載入場次資料失敗: ${error.message}`);
     log('錯誤：載入場次資料失敗，請稍後再試');
@@ -1408,9 +1476,13 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // 設定事件監聽器
   movieSelect.addEventListener('change', handleMovieChange);
+  movieSelect.addEventListener('change', saveFormStateToStorage);
+  timeSelect.addEventListener('change', saveFormStateToStorage);
+  ticketCountSelect.addEventListener('change', saveFormStateToStorage);
+  ticketTypeKeyword.addEventListener('change', saveFormStateToStorage);
   refreshBtn.addEventListener('click', handleRefresh);
   orderBtn.addEventListener('click', handleOrder);
   
-  // 載入場次資料
+  // 載入場次資料（完成後會還原表單狀態）
   loadTimetableData();
 });
