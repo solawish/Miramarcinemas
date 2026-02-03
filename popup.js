@@ -938,11 +938,34 @@ async function submitOrder(orderData) {
 }
 
 /**
- * 從座位選擇頁面 HTML 解析可選擇的座位
+ * 判斷 td 的 background-color 是否為可選（白色）
+ * @param {string} bgValue - 已解析的 background-color 值（小寫）
+ * @returns {boolean}
+ */
+function isSeatSelectableByBg(bgValue) {
+  return bgValue === 'white' || /rgb\s*\(\s*255\s*,\s*255\s*,\s*255\s*\)/.test(bgValue);
+}
+
+/**
+ * 判斷 td 的 background-color 是否為不可選（transparent、gray）
+ * @param {string} bgValue - 已解析的 background-color 值（小寫）
+ * @returns {boolean}
+ */
+function isSeatUnselectableByBg(bgValue) {
+  if (!bgValue) return false;
+  if (bgValue === 'transparent') return true;
+  if (bgValue === 'gray') return true;
+  if (/rgb\s*\(\s*128\s*,\s*128\s*,\s*128\s*\)/.test(bgValue)) return true;
+  return false;
+}
+
+/**
+ * 從座位選擇頁面 HTML 解析可選擇的座位與同一排內不可選座位的欄位位置（供間隔檢查）
  * @param {string} html - 座位選擇頁面 HTML（訂票回應的 response）
- * @returns {Array<Object>} 可選擇的座位陣列，每項含 AreaCategoryCode, AreaNumber, ColumnIndex, RowIndex, PhysicalName, SeatId
+ * @returns {{ selectableSeats: Array<Object>, unselectablePositionsByRow: Object }} selectableSeats 每項含 AreaCategoryCode, AreaNumber, ColumnIndex, RowIndex, PhysicalName, SeatId；unselectablePositionsByRow 以 'PhysicalName|RowIndex' 為 key，value 為該排不可選座位的欄位數值陣列（ColumnIndex 或 SeatId 轉數字）
  */
 function parseSeatTable(html) {
+  const emptyResult = { selectableSeats: [], unselectablePositionsByRow: {} };
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
@@ -950,50 +973,127 @@ function parseSeatTable(html) {
 
     if (!seatTable) {
       log('找不到 id=seatTable 的表格元素');
-      return [];
+      return emptyResult;
     }
 
     const allTds = seatTable.querySelectorAll('td');
-    const seats = [];
+    const selectableSeats = [];
+    const unselectablePositionsByRow = {};
+
+    const getAttr = (td, name) => (td.getAttribute(name) || td.getAttribute(name.charAt(0).toUpperCase() + name.slice(1)) || '').trim();
+    const rowKey = (physicalName, rowIndex) => `${(physicalName || '').toUpperCase()}|${rowIndex}`;
+    const colValue = (td) => {
+      const ci = getAttr(td, 'columnindex');
+      const sid = getAttr(td, 'seatid');
+      const n = parseInt(ci, 10);
+      if (!Number.isNaN(n)) return n;
+      const s = parseInt(sid, 10);
+      if (!Number.isNaN(s)) return s;
+      return null;
+    };
 
     for (const td of allTds) {
       const style = (td.getAttribute('style') || '').toLowerCase();
       const bgMatch = style.match(/background-color\s*:\s*([^;]+)/);
       const bgValue = (bgMatch ? bgMatch[1].trim() : '').toLowerCase();
-      const isWhite = bgValue === 'white' || /rgb\s*\(\s*255\s*,\s*255\s*,\s*255\s*\)/.test(bgValue);
-      if (!isWhite) {
+
+      if (isSeatSelectableByBg(bgValue)) {
+        const seat = {
+          AreaCategoryCode: getAttr(td, 'areacategorycode') || getAttr(td, 'AreaCategoryCode'),
+          AreaNumber: getAttr(td, 'areanumber') || getAttr(td, 'AreaNumber'),
+          ColumnIndex: getAttr(td, 'columnindex') || getAttr(td, 'ColumnIndex'),
+          RowIndex: getAttr(td, 'rowindex') || getAttr(td, 'RowIndex'),
+          PhysicalName: getAttr(td, 'physicalname') || getAttr(td, 'PhysicalName'),
+          SeatId: getAttr(td, 'seatid') || getAttr(td, 'SeatId')
+        };
+        if (seat.PhysicalName && seat.SeatId) {
+          selectableSeats.push(seat);
+        }
         continue;
       }
 
-      const getAttr = (name) => (td.getAttribute(name) || '').trim();
-      const seat = {
-        AreaCategoryCode: getAttr('areacategorycode') || getAttr('AreaCategoryCode'),
-        AreaNumber: getAttr('areanumber') || getAttr('AreaNumber'),
-        ColumnIndex: getAttr('columnindex') || getAttr('ColumnIndex'),
-        RowIndex: getAttr('rowindex') || getAttr('RowIndex'),
-        PhysicalName: getAttr('physicalname') || getAttr('PhysicalName'),
-        SeatId: getAttr('seatid') || getAttr('SeatId')
-      };
-      if (seat.PhysicalName && seat.SeatId) {
-        seats.push(seat);
+      if (isSeatUnselectableByBg(bgValue)) {
+        const physicalName = getAttr(td, 'physicalname') || getAttr(td, 'PhysicalName');
+        const rowIndex = getAttr(td, 'rowindex') || getAttr(td, 'RowIndex');
+        const c = colValue(td);
+        if (physicalName && rowIndex !== '' && c != null) {
+          const key = rowKey(physicalName, rowIndex);
+          if (!unselectablePositionsByRow[key]) unselectablePositionsByRow[key] = [];
+          unselectablePositionsByRow[key].push(c);
+        }
       }
     }
 
-    log(`從座位表解析出 ${seats.length} 個可選擇座位`);
-    return seats;
+    log(`從座位表解析出 ${selectableSeats.length} 個可選擇座位`);
+    const unselectableRowCount = Object.keys(unselectablePositionsByRow).length;
+    if (unselectableRowCount > 0) {
+      log(`不可選座位位置：${unselectableRowCount} 排有記錄`);
+    }
+    return { selectableSeats, unselectablePositionsByRow };
   } catch (error) {
     log(`解析座位表錯誤: ${error.message}`);
-    return [];
+    return emptyResult;
   }
 }
 
 /**
- * 根據票數與優先順序選擇座位（PhysicalName 越大越好，同區取 SeatId 中間值）
- * @param {Array<Object>} seats - parseSeatTable 回傳的座位陣列
+ * 取得座位的欄位數值（用於同一排內計算間隔）
+ * @param {Object} seat - 座位物件，含 ColumnIndex 或 SeatId
+ * @returns {number}
+ */
+function getSeatColNumber(seat) {
+  const ci = parseInt(seat.ColumnIndex, 10);
+  if (!Number.isNaN(ci)) return ci;
+  const sid = parseInt(seat.SeatId, 10);
+  if (!Number.isNaN(sid)) return sid;
+  return NaN;
+}
+
+/**
+ * 同一排內兩位置的「中間空格數」：|colA - colB| - 1。若為 1 表示僅空 1 格（不允許）。
+ * @param {number} colA
+ * @param {number} colB
+ * @returns {number}
+ */
+function gapBetweenCols(colA, colB) {
+  return Math.abs(colA - colB) - 1;
+}
+
+/**
+ * 檢查候選座位是否與同一排內不可選座位或已選座位「僅空 1 格」（違反間隔規則）
+ * @param {Object} seat - 候選座位
+ * @param {Array<Object>} picked - 已選座位陣列
+ * @param {Object} unselectablePositionsByRow - 同一排不可選欄位位置，key 為 'PhysicalName|RowIndex'
+ * @returns {boolean} true 表示可納入（未違反）
+ */
+function canAddSeatWithGapRule(seat, picked, unselectablePositionsByRow) {
+  const rowKey = `${(seat.PhysicalName || '').toUpperCase()}|${seat.RowIndex}`;
+  const col = getSeatColNumber(seat);
+  if (Number.isNaN(col)) return true;
+
+  const unselectableCols = unselectablePositionsByRow && unselectablePositionsByRow[rowKey];
+  if (unselectableCols && Array.isArray(unselectableCols)) {
+    for (const uc of unselectableCols) {
+      if (gapBetweenCols(col, uc) === 1) return false;
+    }
+  }
+
+  for (const p of picked) {
+    if (p.PhysicalName !== seat.PhysicalName || p.RowIndex !== seat.RowIndex) continue;
+    const pc = getSeatColNumber(p);
+    if (!Number.isNaN(pc) && gapBetweenCols(col, pc) === 1) return false;
+  }
+  return true;
+}
+
+/**
+ * 根據票數與優先順序選擇座位（PhysicalName 越大越好，同區取 SeatId 中間值），且選定座位與同一排內不可選／已選座位不得僅空 1 格。
+ * @param {Array<Object>} seats - parseSeatTable 回傳的 selectableSeats
  * @param {number} count - 要選擇的座位數
+ * @param {Object} [unselectablePositionsByRow] - parseSeatTable 回傳的 unselectablePositionsByRow，key 為 'PhysicalName|RowIndex'
  * @returns {Array<Object>} 選中的座位陣列
  */
-function selectSeats(seats, count) {
+function selectSeats(seats, count, unselectablePositionsByRow = {}) {
   if (!seats || seats.length === 0 || count < 1) {
     return [];
   }
@@ -1015,20 +1115,21 @@ function selectSeats(seats, count) {
     const len = group.length;
     const mid = Math.floor((len - 1) / 2);
     const indices = [];
-    const need = Math.min(n - picked.length, len);
-    for (let i = 0; i < need; i++) {
+    const need = n - picked.length;
+    for (let i = 0; i < len && picked.length < n; i++) {
       const offset = (i % 2 === 0) ? -Math.floor(i / 2) : Math.ceil(i / 2);
       const idx = mid + offset;
-      if (idx >= 0 && idx < len && !indices.includes(idx)) {
-        indices.push(idx);
-        picked.push(group[idx]);
-      }
+      if (idx < 0 || idx >= len || indices.includes(idx)) continue;
+      const candidate = group[idx];
+      if (!canAddSeatWithGapRule(candidate, picked, unselectablePositionsByRow)) continue;
+      indices.push(idx);
+      picked.push(candidate);
     }
     if (picked.length >= n) break;
   }
 
   const result = picked.slice(0, n);
-  log(`已選擇 ${result.length} 個座位（PhysicalName 優先，同區取中間）`);
+  log(`已選擇 ${result.length} 個座位（PhysicalName 優先，同區取中間，且遵守間隔規則）`);
   return result;
 }
 
@@ -1370,7 +1471,7 @@ async function handleOrder() {
 
     log('步驟 7: 解析座位選擇頁面...');
     const seatPlanHtml = orderResult.response;
-    const availableSeats = parseSeatTable(seatPlanHtml);
+    const { selectableSeats: availableSeats, unselectablePositionsByRow } = parseSeatTable(seatPlanHtml);
 
     if (availableSeats.length === 0) {
       log('訂票請求成功，但無法解析座位表（可能頁面結構不同或無空位）');
@@ -1384,8 +1485,8 @@ async function handleOrder() {
       return;
     }
 
-    log('步驟 8: 根據票數與優先順序選擇座位...');
-    const selectedSeats = selectSeats(availableSeats, ticketCountNum);
+    log('步驟 8: 根據票數與優先順序選擇座位（含間隔規則：與不可選／已選座位不得僅空 1 格）...');
+    const selectedSeats = selectSeats(availableSeats, ticketCountNum, unselectablePositionsByRow);
 
     if (selectedSeats.length === 0) {
       log('錯誤：無法選擇任何座位');
@@ -1399,6 +1500,7 @@ async function handleOrder() {
 
     if (selectedSeats.length < ticketCountNum) {
       log(`警告：僅能選擇 ${selectedSeats.length} 個座位（需要 ${ticketCountNum} 個），將繼續提交`);
+      log('可能原因：可選座位不足或因間隔規則（與不可選／已選座位不得僅空 1 格）無法湊滿');
     }
 
     log('步驟 9: 提取座位頁表單資料...');

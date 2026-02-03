@@ -114,10 +114,8 @@ Extension SHALL 在介面最下方提供一個訂購按鈕，並實作完整的�
   10. 構建 TicketType 陣列，將選定的票種資訊序列化為 JSON，並將 Qty 設為使用者選擇的票數
   11. POST 請求到 `https://www.miramarcinemas.tw/Booking/TicketType`，使用 `application/x-www-form-urlencoded` 格式，帶入所有必要的 cookies 和 body 參數
   12. 從訂票回應的 HTML 中解析座位選擇頁面，找到 `id=seatTable` 的表格元素
-  13. 從座位表格中提取所有可選擇的座位（`td` 元素且 `style=background-color:white;`）
-  14. 根據票數和優先順序選擇座位：
-     - PhysicalName 越大越好（Z > Y > ... > B > A）
-     - 相同 PhysicalName 時，選擇 SeatId 的最大值和最小值的中間值（例如：1~24 選 12 或 13）
+  13. 從座位表格中提取可選擇與不可選擇的座位資訊：僅 `style=background-color:white;`（或等同白色）的 `td` 為可選；`style=background-color:transparent;` 與 `style=background-color:gray;` 的 `td` 為不可選；並取得同一排內不可選座位的欄位位置，供間隔檢查使用
+  14. 根據票數和優先順序選擇座位（PhysicalName 越大越好，相同 PhysicalName 時取 SeatId 中間值），且選定的座位與同一排內不可選座位、以及已選座位之間不得僅空 1 格（須相鄰或至少隔 2 格）
   15. 從座位選擇頁面的表單中提取所有 input 欄位（選擇器：`#booking_data > section.page_title > section.bg > div > form`）
   16. 構建 POST body，包含所有表單 input 欄位（id 作為 key，value 作為 value），並將選擇的座位序列化為 JSON 陣列作為 `seat` 欄位的值
   17. POST 請求到 `https://www.miramarcinemas.tw/Booking/SeatPlan`，使用 `application/x-www-form-urlencoded` 格式，帶入所有必要的 cookies 和 body 參數
@@ -169,26 +167,21 @@ Extension SHALL 在介面最下方提供一個訂購按鈕，並實作完整的�
 
 #### Scenario: 座位表格解析
 - **WHEN** Extension 取得訂票回應的 HTML（包含座位選擇頁面）
-- **THEN** 應解析 HTML，找到 `id=seatTable` 的表格，並提取所有可選擇的座位：
+- **THEN** 應解析 HTML，找到 `id=seatTable` 的表格，並提取可選與不可選座位資訊：
   - 從表格中取得所有 `td` 元素
-  - 過濾出 `style=background-color:white;` 的 `td` 元素（這些才是可選擇的座位）
-  - 從每個可選擇的 `td` 元素中提取以下屬性：
-    - `physicalname`: 座位區域代碼（英文，例如：A, B, C, ..., Z）
-    - `seatid`: 座位 ID（數字字串，例如："1", "2", ..., "24"）
-    - `areacategorycode`: 區域類別代碼
-    - `areanumber`: 區域編號
-    - `columnindex`: 欄索引
-    - `rowindex`: 列索引
+  - 可選座位：僅 `style=background-color:white;`（或等同白色，如 `rgb(255,255,255)`）的 `td` 為可選擇
+  - 不可選座位：`style=background-color:transparent;` 與 `style=background-color:gray;`（或等同 gray）的 `td` 為不可選擇
+  - 從每個可選 `td` 提取屬性：physicalname, seatid, areacategorycode, areanumber, columnindex, rowindex
+  - 同一排（同一 PhysicalName + RowIndex）內不可選座位的欄位位置（如 columnindex 或 seatid）須一併取得，供選位時間隔檢查使用
 
 #### Scenario: 座位選擇邏輯
 - **WHEN** Extension 需要根據票數選擇座位
-- **THEN** 應根據以下優先順序選擇座位：
+- **THEN** 應根據以下優先順序與約束選擇座位：
   1. PhysicalName 越大越好（Z > Y > ... > B > A）
-  2. 相同 PhysicalName 時，選擇 SeatId 的最大值和最小值的中間值：
-     - 如果可選擇的座位 SeatId 範圍為 1~24，則選擇 12 或 13（最接近中間的座位）
-     - 如果票數為 2，選擇最接近中間的兩個座位
-     - 如果票數為 1，選擇最接近中間的一個座位
-  3. 確保選擇的座位數量符合使用者選擇的票數
+  2. 相同 PhysicalName 時，選擇 SeatId 的最大值和最小值的中間值（例如：1~24 選 12 或 13）
+  3. 間隔約束：選定的座位與同一排內不可選座位之間，不得僅空 1 格（須相鄰或至少隔 2 格）；選定 2 個以上座位時，第二個及之後選定的座位與已選座位之間亦須遵守相同規則（不得僅空 1 格）
+  4. 依上述優先順序依序嘗試納入候選座位，若違反間隔約束則跳過該候選，改試下一個，直到湊滿票數或候選用盡
+  5. 確保選擇的座位數量符合使用者選擇的票數（在滿足間隔約束下盡量湊滿）
 
 #### Scenario: 表單資料提取
 - **WHEN** Extension 需要提取座位選擇頁面的表單資料
@@ -259,30 +252,23 @@ Extension SHALL 在 manifest.json 中宣告 `cookies` 權限，以取得瀏覽�
 - **THEN** manifest.json 應包含 `cookies` 權限，並指定 `host_permissions` 為 `https://www.miramarcinemas.tw/*`
 
 ### Requirement: 座位選擇功能
-Extension SHALL 從訂票回應的 HTML 中解析座位表格，並根據票數和優先順序自動選擇合適的座位。
+Extension SHALL 從訂票回應的 HTML 中解析座位表格，並根據票數和優先順序自動選擇合適的座位；選定座位須遵守與不可選座位及已選座位之間的間隔規則。
 
 #### Scenario: 座位表格解析
 - **WHEN** Extension 取得訂票回應的 HTML（包含座位選擇頁面）
-- **THEN** 應解析 HTML，找到 `id=seatTable` 的表格，並提取所有可選擇的座位：
+- **THEN** 應解析 HTML，找到 `id=seatTable` 的表格，並提取可選與不可選座位資訊：
   - 從表格中取得所有 `td` 元素
-  - 過濾出 `style=background-color:white;` 的 `td` 元素（這些才是可選擇的座位）
-  - 從每個可選擇的 `td` 元素中提取以下屬性：
-    - `physicalname`: 座位區域代碼（英文，例如：A, B, C, ..., Z）
-    - `seatid`: 座位 ID（數字字串，例如："1", "2", ..., "24"）
-    - `areacategorycode`: 區域類別代碼
-    - `areanumber`: 區域編號
-    - `columnindex`: 欄索引
-    - `rowindex`: 列索引
+  - 可選座位：僅 `style=background-color:white;`（或等同白色）的 `td` 為可選擇；從每個可選 `td` 提取屬性：physicalname, seatid, areacategorycode, areanumber, columnindex, rowindex
+  - 不可選座位：`style=background-color:transparent;` 與 `style=background-color:gray;`（或等同 gray）的 `td` 為不可選擇；同一排（同一 PhysicalName + RowIndex）內不可選座位的欄位位置（如 columnindex 或 seatid）須一併取得，供選位時間隔檢查使用
 
 #### Scenario: 座位選擇優先順序
 - **WHEN** Extension 需要根據票數選擇座位
-- **THEN** 應根據以下優先順序選擇座位：
+- **THEN** 應根據以下優先順序與約束選擇座位：
   1. PhysicalName 越大越好（Z > Y > ... > B > A）
-  2. 相同 PhysicalName 時，選擇 SeatId 的最大值和最小值的中間值：
-     - 如果可選擇的座位 SeatId 範圍為 1~24，則選擇 12 或 13（最接近中間的座位）
-     - 如果票數為 2，選擇最接近中間的兩個座位
-     - 如果票數為 1，選擇最接近中間的一個座位
-  3. 確保選擇的座位數量符合使用者選擇的票數
+  2. 相同 PhysicalName 時，選擇 SeatId 的最大值和最小值的中間值（例如：1~24 選 12 或 13）
+  3. 間隔約束：選定的座位與同一排內不可選座位之間，不得僅空 1 格（須相鄰或至少隔 2 格）；選定 2 個以上座位時，第二個及之後選定的座位與已選座位之間亦須遵守相同規則（不得僅空 1 格）
+  4. 依上述優先順序依序嘗試納入候選座位，若違反間隔約束則跳過該候選，改試下一個，直到湊滿票數或候選用盡
+  5. 確保選擇的座位數量符合使用者選擇的票數（在滿足間隔約束下盡量湊滿）
 
 ### Requirement: 座位提交功能
 Extension SHALL 將選擇的座位提交到 `/Booking/SeatPlan` API 完成訂票流程。
